@@ -175,6 +175,14 @@ export default function App() {
                 mikrofontilladelse. Åbn den app, klik <strong>Tillad mikrofon</strong>, og tjek{" "}
                 <strong>Systemindstillinger → Mikrofon</strong> — der skal <strong>Hey Mikkel</strong> stå.
                 <br />
+                <strong>Kontakten for Hey Mikkel er grå / kan ikke trykkes?</strong> Det styres ofte af{" "}
+                <strong>Skærmtid</strong> (børneindstillinger) eller andre begrænsninger: gå til{" "}
+                <strong>Systemindstillinger → Skærmtid</strong> (eller med knappen nedenfor), find{" "}
+                <strong>Indhold og beskyttelse af privatliv</strong> (eller{" "}
+                <strong>Indholds- og privatlivsbegrænsninger</strong> på engelsk macOS), lås op med kode, og sørg
+                for at <strong>appene må bruge/ændre mikrofon</strong> — eller flyt <strong>Hey Mikkel.app</strong> ind i
+                mappen <strong>Programmer</strong> og kør appen derfra, genstart evt. Mac.
+                <br />
                 <strong>Udvikling (tauri dev):</strong> kør <code>npm run tauri:macos:prepare</code> en gang, derefter{" "}
                 <code>npm run tauri dev</code> (bruger nu lokal <code>target</code> uden Cursors ekstra sti). Tjek
                 listen for <code>hey-mikkel</code> hvis navnet ikke vises som "Hey Mikkel".
@@ -198,6 +206,9 @@ export default function App() {
                 </button>
                 <button type="button" className="inline-button" onClick={() => void invoke("open_microphone_privacy")}>
                   Åbn mikrofon-panelet
+                </button>
+                <button type="button" className="inline-button" onClick={() => void invoke("open_screentime_settings")}>
+                  Åbn Skærmtid (hvis “Mikrofon” er låst)
                 </button>
               </div>
             </div>

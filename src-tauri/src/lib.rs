@@ -285,6 +285,30 @@ fn open_microphone_privacy() -> Result<(), String> {
     Ok(())
 }
 
+/// Ofte nødvendigt hvis Skærmtid/Indhold låser forældrekontrol for mikrofon (grå toggle).
+#[tauri::command]
+fn open_screentime_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        for url in [
+            "x-apple.systempreferences:com.apple.preferences.screentime",
+            "x-apple.systempreferences:com.apple.preference.screentime",
+        ] {
+            let s = std::process::Command::new("open")
+                .arg(url)
+                .status();
+            if s.map(|c| c.success()).unwrap_or(false) {
+                return Ok(());
+            }
+        }
+        return Err("Kunne ikke åbne Skærmtid — åbn manuelt under Systemindstillinger.".to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
 #[tauri::command]
 fn request_accessibility_permission() -> bool {
     #[cfg(target_os = "macos")]
@@ -492,6 +516,7 @@ pub fn run() {
             show_settings_window,
             hide_main_window,
             open_microphone_privacy,
+            open_screentime_settings,
             request_macos_av_microphone,
             mic_native::native_mic_start,
             mic_native::native_mic_stop
