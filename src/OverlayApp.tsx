@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Copy, X, Check, Wand2, Briefcase, RefreshCw } from "lucide-react";
 import { useVoiceSession } from "./hooks/useVoiceSession";
+import { requestNativeMicrophonePermission } from "./macosMicPermission";
 import { getSettings } from "./voice/settings";
 import type { AppState } from "./voice/types";
 
@@ -122,6 +123,13 @@ export function OverlayApp() {
 
   useEffect(() => {
     if (!window.__TAURI_INTERNALS__) return;
+    void requestNativeMicrophonePermission().catch(() => {
+      /* ignore: permission can also be requested on first recording */
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!window.__TAURI_INTERNALS__) return;
     if (state !== "idle") return;
     void (async () => {
       try {
@@ -224,6 +232,15 @@ export function OverlayApp() {
         <div className="hm-toast">
           <p>{error}</p>
           <div className="hm-toast-actions">
+            {/Tilgaengelighed|Accessibility/i.test(error) && window.__TAURI_INTERNALS__ ? (
+              <button
+                type="button"
+                className="hm-toast-btn"
+                onClick={() => void invoke("open_accessibility_settings")}
+              >
+                Aabn Tilgaengelighed
+              </button>
+            ) : null}
             {/mikrofon|microphone|Lyd|Input|lyd|input|optag|Core|enhed|Hey|afvist|not allowed|privatliv|Fortrolig/i.test(
               error,
             ) && window.__TAURI_INTERNALS__ ? (

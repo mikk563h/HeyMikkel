@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Clipboard, Mic, Monitor, Settings, Sparkles, X } from "lucide-react";
 import { useVoiceSession } from "./hooks/useVoiceSession";
 import { loadSettings, type Language, type SettingsState } from "./voice/settings";
@@ -44,6 +45,18 @@ export default function App() {
     if (!window.__TAURI_INTERNALS__) return;
     void invoke<boolean>("request_accessibility_permission");
   }, []);
+
+  useEffect(() => {
+    if (!window.__TAURI_INTERNALS__) return;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      unlisten = await listen("push-to-talk-permission-missing", () => {
+        setMessage("Option virker ikke endnu: giv adgang under Privatliv og sikkerhed -> Tilgaengelighed.");
+        setShowSettings(true);
+      });
+    })();
+    return () => unlisten?.();
+  }, [setMessage]);
 
   const statusText = useMemo(() => {
     if (state === "listening") return "Lytter...";
@@ -114,7 +127,7 @@ export default function App() {
           >
             Hold for at tale (test)
           </button>
-          <span>Den primære oplevelse kører i baggrunden i overlay, når du holder Option (⌥) nede.</span>
+          <span>Hold Option (⌥) nede for push-to-talk i baggrunden.</span>
         </div>
 
         {transcript && (
@@ -179,47 +192,9 @@ export default function App() {
             <div className="mic-guide">
               <h3 className="mic-guide-title">Mikrofon — så kommer appen på listen</h3>
               <p className="mic-guide-lead">
-                <strong>Sikreste vej (rigtig Mac-app):</strong> i projektmappen kør{" "}
-                <code>npm run tauri:macos:app</code> — så bygges <strong>Hey Mikkel.app</strong> med til bundtet
-                mikrofontilladelse. Åbn den app, klik <strong>Tillad mikrofon</strong>, og tjek{" "}
-                <strong>Systemindstillinger → Mikrofon</strong> — der skal <strong>Hey Mikkel</strong> stå.
-                <br />
-                <strong>Kontakten for Hey Mikkel er grå / kan ikke trykkes?</strong> Det styres ofte af{" "}
-                <strong>Skærmtid</strong> (børneindstillinger) eller andre begrænsninger: gå til{" "}
-                <strong>Systemindstillinger → Skærmtid</strong> (eller med knappen nedenfor), find{" "}
-                <strong>Indhold og beskyttelse af privatliv</strong> (eller{" "}
-                <strong>Indholds- og privatlivsbegrænsninger</strong> på engelsk macOS), lås op med kode, og sørg
-                for at <strong>appene må bruge/ændre mikrofon</strong> — eller flyt <strong>Hey Mikkel.app</strong> ind i
-                mappen <strong>Programmer</strong> og kør appen derfra, genstart evt. Mac.
-                <br />
-                <strong>Står der «Ingen enheder til lyd ind» i Systemindstillinger?</strong> Så har Mac’en ingen
-                mikrofon til rådighed — fx <strong>Mac mini</strong> har som regel <strong>ingen indbygget</strong>{" "}
-                mik; tilslut <strong>USB-headset / USB-mik</strong>, indtil Lyd ind viser mindst én enhed.
-                <br />
-                <strong>Fejl med lyd, selv når “Mikrofon” for Hey Mikkel er tændt?</strong> Vælg fanen{" "}
-                <strong>Lyd ind</strong> (ikke <strong>Lyd ud</strong>) — knappen{" "}
-                <strong>«Åbn Lyd — vælg fanen Lyd ind»</strong> går direkte derhen.
-                <br />
-                <strong>Udvikling (tauri dev):</strong> kør <code>npm run tauri:macos:prepare</code> en gang, derefter{" "}
-                <code>npm run tauri dev</code> (bruger nu lokal <code>target</code> uden Cursors ekstra sti). Tjek
-                listen for <code>hey-mikkel</code> hvis navnet ikke vises som "Hey Mikkel".
+                Kør <code>npm run tauri:macos:app</code>, åbn appen, og tillad mikrofon når macOS spørger. Tjek
+                derefter <strong>Systemindstillinger → Fortrolighed og sikkerhed → Mikrofon</strong>.
               </p>
-              <ol className="mic-steps">
-                <li>
-                  Hvis lyd fejler: klik <strong>«Åbn Lyd — vælg fanen Lyd ind»</strong> (ikke fanen Lyd ud).
-                </li>
-                <li>
-                  Klik <strong>Test mikrofon</strong> nedenfor.
-                </li>
-                <li>
-                  Hvis et macOS-vindue spørger, vælg <strong>OK</strong>.
-                </li>
-                <li>
-                  Gå til <strong>Systemindstillinger → Anonymitet og sikkerhed → Mikrofon</strong> og tjek at{" "}
-                  <strong>Hey Mikkel</strong> er slået til. (Når du kører med <code>npm run tauri dev</code>, kan
-                  navnet i stedet være <code>hey-mikkel</code> — det er samme app.)
-                </li>
-              </ol>
               <div className="mic-guide-actions">
                 <button
                   type="button"
@@ -233,9 +208,6 @@ export default function App() {
                 </button>
                 <button type="button" className="inline-button" onClick={() => void invoke("open_microphone_privacy")}>
                   Åbn Fortrolighed — Mikrofon
-                </button>
-                <button type="button" className="inline-button" onClick={() => void invoke("open_screentime_settings")}>
-                  Åbn Skærmtid (hvis “Mikrofon” er låst)
                 </button>
               </div>
             </div>

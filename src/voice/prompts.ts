@@ -63,16 +63,12 @@ export const MIKKEL_TONE_PROMPT = `Write in Mikkel's voice:
 const SCREEN_TRIGGERS = [
   "kig på min skærm",
   "kig paa min skaerm",
-  "læs det her",
-  "laes det her",
-  "svar på det her",
-  "svar paa det her",
-  "det her opslag",
-  "linkedin",
-  "skærm",
-  "skaerm",
-  "hvad står der",
-  "hvad staar der",
+  "se på min skærm",
+  "se paa min skaerm",
+  "læs min skærm",
+  "laes min skaerm",
+  "brug skærmen",
+  "brug skaermen",
 ];
 
 const LINKEDIN_TRIGGERS = ["linkedin", "opslag", "kommentar", "post"];

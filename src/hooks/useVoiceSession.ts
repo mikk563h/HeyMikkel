@@ -97,10 +97,12 @@ export function useVoiceSession(options: Options) {
       setState("thinking");
       setMessage("Transskriberer...");
       const audioBase64 = await audioBlobToBase64(blob);
+      const language = settings.language === "auto" ? null : settings.language;
       const spokenText = await invoke<string>("transcribe_audio", {
         apiKey: settings.apiKey,
         audioBase64,
         mimeType: blob.type || "audio/webm",
+        language,
       });
 
       setTranscript(spokenText);
@@ -245,7 +247,10 @@ export function useVoiceSession(options: Options) {
         });
         unlistenPermission = await listen("push-to-talk-permission-missing", () => {
           if (!active) return;
-          setMessage("Giv Accessibility-tilladelse for Hey Mikkel og genstart appen.");
+          const help = "Push-to-talk mangler macOS Accessibility. Giv adgang til Hey Mikkel under Privatliv og sikkerhed -> Tilgaengelighed.";
+          setError(help);
+          setMessage(help);
+          setState("error");
         });
       } catch (e) {
         console.warn("PTT listen failed", e);
