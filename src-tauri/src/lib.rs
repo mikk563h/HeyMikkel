@@ -27,8 +27,9 @@ fn set_macos_activation_regular(app: &AppHandle) {
 #[cfg(not(target_os = "macos"))]
 fn set_macos_activation_regular(_app: &AppHandle) {}
 
-/// Kald fra frontend. Skal køre på main thread, med synligt vindue, og vi venter til AVFoundation
-/// har fået svar (ellers ser WebKit ofte 0 lydenheder).
+/// Kald fra frontend. Kører på main thread, med synligt vindue, og venter til både
+/// AVFAudio (record permission, macOS 14+) **og** AVFoundation (capture) har svar, så TCC
+/// typisk får både dialog og plads under Systemindstillinger → Mikrofon.
 #[tauri::command]
 fn request_macos_av_microphone(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -39,6 +40,7 @@ fn request_macos_av_microphone(app: AppHandle) -> Result<(), String> {
         use block2::RcBlock;
         use objc2::runtime::Bool;
         use objc2_av_foundation::{AVCaptureDevice, AVMediaTypeAudio};
+        use objc2_avf_audio::AVAudioApplication;
 
         let (tx, rx) = mpsc::channel();
         let app2 = app.clone();
@@ -48,16 +50,26 @@ fn request_macos_av_microphone(app: AppHandle) -> Result<(), String> {
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
-                let tx_block = tx.clone();
-                let block = RcBlock::new(move |_granted: Bool| {
-                    let _ = tx_block.send(());
+                // 1) AVFAudio: den dialog macOS 14+ forventer til “optag lyd” / cpal-vej.
+                // 2) Derefter AVCapture + AVMediaTypeAudio: ældre TCC-klient + backup hvis
+                //    AVMediaTypeAudio ellers aldrig blev kaldt (hvis nogen skulle mangle kæden).
+                let tx_after_audio = tx.clone();
+                let b_after_av_audio = RcBlock::new(move |_: Bool| {
+                    unsafe {
+                        if let Some(audio) = AVMediaTypeAudio {
+                            let tx_cap = tx_after_audio.clone();
+                            let b_capture = RcBlock::new(move |_: Bool| {
+                                let _ = tx_cap.send(());
+                            });
+                            AVCaptureDevice::requestAccessForMediaType_completionHandler(audio, &b_capture);
+                        } else {
+                            eprintln!("[Hey Mikkel] AVMediaTypeAudio er null — tjek at AVFoundation linkes.");
+                            let _ = tx_after_audio.send(());
+                        }
+                    }
                 });
                 unsafe {
-                    if let Some(audio) = AVMediaTypeAudio {
-                        AVCaptureDevice::requestAccessForMediaType_completionHandler(audio, &block);
-                    } else {
-                        let _ = tx.send(());
-                    }
+                    AVAudioApplication::requestRecordPermissionWithCompletionHandler(&b_after_av_audio);
                 }
             })
             .map_err(|e| e.to_string())?;

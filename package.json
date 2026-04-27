@@ -8,7 +8,8 @@
     "dev:macos": "concurrently -k -n VITE,mic \"npm run dev\" \"node ./scripts/macos-codesign-watcher.mjs\"",
     "tauri:sign-macos": "node ./scripts/macos-sign-manual.mjs",
     "tauri:macos:prepare": "cd src-tauri && cargo build && cd .. && npm run tauri:sign-macos",
-    "tauri:macos:app": "npm run build && npm run tauri -- build --debug && node ./scripts/macos-open-debug-app.mjs",
+    "tauri:macos:app": "npm run build && npm run tauri -- build --debug && node ./scripts/macos-codesign-debug-app.mjs && node ./scripts/macos-open-debug-app.mjs",
+    "tauri:macos:app:open": "node ./scripts/macos-open-debug-app.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "node ./scripts/run-tauri-dev.mjs"
