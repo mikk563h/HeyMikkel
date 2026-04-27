@@ -1,12 +1,13 @@
 use std::io::Cursor;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use device_query::{DeviceQuery, DeviceState, Keycode};
 use image::{DynamicImage, ImageOutputFormat};
 use reqwest::multipart::{Form, Part};
+use rdev::{listen, EventType, Key};
 use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -43,13 +44,8 @@ fn request_macos_av_microphone(app: AppHandle) -> Result<(), String> {
         use objc2_avf_audio::AVAudioApplication;
 
         let (tx, rx) = mpsc::channel();
-        let app2 = app.clone();
         app
             .run_on_main_thread(move || {
-                if let Some(w) = app2.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
                 // 1) AVFAudio: den dialog macOS 14+ forventer til “optag lyd” / cpal-vej.
                 // 2) Derefter AVCapture + AVMediaTypeAudio: ældre TCC-klient + backup hvis
                 //    AVMediaTypeAudio ellers aldrig blev kaldt (hvis nogen skulle mangle kæden).
@@ -86,7 +82,12 @@ fn request_macos_av_microphone(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn transcribe_audio(api_key: String, audio_base64: String, mime_type: String) -> Result<String, String> {
+async fn transcribe_audio(
+    api_key: String,
+    audio_base64: String,
+    mime_type: String,
+    language: Option<String>,
+) -> Result<String, String> {
     if api_key.trim().is_empty() {
         return Err("OpenAI API key mangler.".into());
     }
@@ -95,14 +96,29 @@ async fn transcribe_audio(api_key: String, audio_base64: String, mime_type: Stri
         .decode(audio_base64)
         .map_err(|_| "Kunne ikke læse lydoptagelsen.".to_string())?;
 
+    let file_name = if mime_type.contains("wav") {
+        "recording.wav"
+    } else if mime_type.contains("mp4") || mime_type.contains("m4a") {
+        "recording.m4a"
+    } else {
+        "recording.webm"
+    };
+
     let audio_part = Part::bytes(audio_bytes)
-        .file_name("recording.webm")
+        .file_name(file_name)
         .mime_str(&mime_type)
         .map_err(|error| error.to_string())?;
 
-    let form = Form::new()
+    let mut form = Form::new()
         .text("model", "gpt-4o-mini-transcribe")
         .part("file", audio_part);
+
+    if let Some(lang) = language {
+        let trimmed = lang.trim();
+        if !trimmed.is_empty() {
+            form = form.text("language", trimmed.to_string());
+        }
+    }
 
     let response = reqwest::Client::new()
         .post("https://api.openai.com/v1/audio/transcriptions")
@@ -345,6 +361,31 @@ fn open_screentime_settings() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_accessibility_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        for url in [
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
+        ] {
+            if std::process::Command::new("open")
+                .arg(url)
+                .status()
+                .map(|c| c.success())
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+        }
+        return Err("Kunne ikke åbne Tilgængelighed i Systemindstillinger.".to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+#[tauri::command]
 fn request_accessibility_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -364,37 +405,14 @@ fn openai_error_message(body: &Value) -> String {
         .to_string()
 }
 
-fn is_option_key(key: &Keycode) -> bool {
-    matches!(
-        key,
-        Keycode::LOption | Keycode::ROption | Keycode::LAlt | Keycode::RAlt
-    )
-}
-
-/// Tillad kun tastaturkombinationer der kun bruger modifiers (⌘, shift, option, ctrl, caps).
-/// Ellers blokerer fx Caps Lock eller en hånd på Shift "hold kun Option".
-fn is_modifier_only_key(key: &Keycode) -> bool {
-    matches!(
-        key,
-        Keycode::LControl
-            | Keycode::RControl
-            | Keycode::LShift
-            | Keycode::RShift
-            | Keycode::LAlt
-            | Keycode::RAlt
-            | Keycode::LOption
-            | Keycode::ROption
-            | Keycode::Command
-            | Keycode::RCommand
-            | Keycode::LMeta
-            | Keycode::RMeta
-            | Keycode::CapsLock
-    )
-}
-
-fn ptt_chord_ok(keys: &[Keycode]) -> bool {
-    let option_is_down = keys.iter().any(is_option_key);
-    option_is_down && keys.iter().all(|k| is_modifier_only_key(k))
+/// Venstre/højre Option på Mac er CGKeyCode 58 / 61 i rdev (`Alt` / `AltGr`).
+/// `Unknown(58|61)` bruges hvis layout/driver afviger.
+fn is_option_key(key: Key) -> bool {
+    match key {
+        Key::Alt | Key::AltGr => true,
+        Key::Unknown(code) => matches!(code, 58 | 61),
+        _ => false,
+    }
 }
 
 /// Fuldskærm uden macOS "eksklusiv fuldskærm" (som giver sort canvas) — fylder primær skærm.
@@ -418,61 +436,93 @@ fn apply_overlay_to_primary<R: Runtime>(overlay: &WebviewWindow<R>) -> Result<()
 }
 
 fn start_command_hold_listener(app_handle: AppHandle) {
+    // Én tråd: på macOS skal Accessibility være aktiv *før* CGEventTap oprettes.
+    // Ellers kan rdev starte uden fejl men ignorere alle tastetryk (Apple-adfærd).
     thread::spawn(move || {
         #[cfg(target_os = "macos")]
         {
-            // Uden Accessibility returnerer device_query ingen taster — vis systemdialog og vent.
             let _ = macos_accessibility_client::accessibility::application_is_trusted_with_prompt();
+            let mut last_missing_accessibility_event = Instant::now() - Duration::from_secs(10);
             while !macos_accessibility_client::accessibility::application_is_trusted() {
-                thread::sleep(Duration::from_millis(500));
-            }
-        }
-
-        let device_state = DeviceState::new();
-        let mut is_talking = false;
-        let mut pending_since: Option<Instant> = None;
-
-        loop {
-            let keys = device_state.get_keys();
-            let chord_ok = ptt_chord_ok(&keys);
-
-            if chord_ok {
-                if !is_talking {
-                    let started_at = pending_since.get_or_insert_with(Instant::now);
-                    if started_at.elapsed() >= Duration::from_millis(180) {
-                        if let Some(overlay) = app_handle.get_webview_window("overlay") {
-                            let _ = apply_overlay_to_primary(&overlay);
-                            let _ = overlay.set_always_on_top(true);
-                            let _ = overlay.show();
-                            let _ = overlay.set_ignore_cursor_events(false);
-                        }
-                        let _ = app_handle.emit_to(
-                            EventTarget::webview_window("overlay"),
-                            "push-to-talk-start",
-                            (),
-                        );
-                        is_talking = true;
-                    }
-                }
-            } else {
-                if !is_talking {
-                    pending_since = None;
-                }
-            }
-
-            if !keys.iter().any(is_option_key) {
-                pending_since = None;
-                if is_talking {
+                if last_missing_accessibility_event.elapsed() >= Duration::from_secs(8) {
                     let _ = app_handle.emit_to(
                         EventTarget::webview_window("overlay"),
-                        "push-to-talk-stop",
+                        "push-to-talk-permission-missing",
                         (),
                     );
-                    is_talking = false;
+                    let _ = app_handle.emit_to(
+                        EventTarget::webview_window("main"),
+                        "push-to-talk-permission-missing",
+                        (),
+                    );
+                    last_missing_accessibility_event = Instant::now();
                 }
+                thread::sleep(Duration::from_millis(200));
             }
+            // Kort pause så TCC er helt konsistent efter toggle.
+            thread::sleep(Duration::from_millis(400));
+        }
 
-            thread::sleep(Duration::from_millis(30));
+        let listener_app = app_handle.clone();
+        let option_down = Arc::new(Mutex::new(false));
+        let is_talking = Arc::new(Mutex::new(false));
+
+        let option_down_c = Arc::clone(&option_down);
+        let is_talking_c = Arc::clone(&is_talking);
+        let callback = move |event: rdev::Event| {
+            match event.event_type {
+                EventType::KeyPress(key) if is_option_key(key) => {
+                    let Ok(mut down) = option_down_c.lock() else {
+                        return;
+                    };
+                    if *down {
+                        return;
+                    }
+                    *down = true;
+
+                    let Ok(mut talking) = is_talking_c.lock() else {
+                        return;
+                    };
+                    if *talking {
+                        return;
+                    }
+
+                    if let Some(overlay) = listener_app.get_webview_window("overlay") {
+                        let _ = apply_overlay_to_primary(&overlay);
+                        let _ = overlay.set_always_on_top(true);
+                        let _ = overlay.show();
+                        let _ = overlay.set_ignore_cursor_events(false);
+                    }
+                    let _ = listener_app.emit_to(
+                        EventTarget::webview_window("overlay"),
+                        "push-to-talk-start",
+                        (),
+                    );
+                    *talking = true;
+                }
+                EventType::KeyRelease(key) if is_option_key(key) => {
+                    if let Ok(mut down) = option_down_c.lock() {
+                        *down = false;
+                    }
+
+                    let Ok(mut talking) = is_talking_c.lock() else {
+                        return;
+                    };
+                    if *talking {
+                        let _ = listener_app.emit_to(
+                            EventTarget::webview_window("overlay"),
+                            "push-to-talk-stop",
+                            (),
+                        );
+                        *talking = false;
+                    }
+                }
+                _ => {}
+            }
+        };
+
+        if let Err(error) = listen(callback) {
+            eprintln!("[Hey Mikkel] global key listen failed: {error:?}");
         }
     });
 }
@@ -553,6 +603,7 @@ pub fn run() {
             open_microphone_privacy,
             open_sound_input_settings,
             open_screentime_settings,
+            open_accessibility_settings,
             request_macos_av_microphone,
             mic_native::native_mic_start,
             mic_native::native_mic_stop
