@@ -1,6 +1,7 @@
 //! Optagelse via Core Audio / cpal — **ikke** WKWebView getUserMedia.
 //! På macOS knytter TCC tilladelsen til Hey Mikkel-processen, så appen vises under Systemindstillinger → Mikrofon.
 
+use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::mpsc::Receiver;
 use std::sync::{Mutex, OnceLock};
@@ -52,17 +53,73 @@ fn push_f32(buf: &std::sync::Arc<Mutex<Vec<f32>>>, data: &[f32]) {
     }
 }
 
-/// Standard-input, ellers første enhed i listen, der faktisk understøtter input.
-fn pick_input_device() -> Result<Device, String> {
-    let host = cpal::default_host();
+/// Saml input-enheder: først systemets “standard” input, derefter resten (uden dubletter efter navn).
+fn enumerate_input_devices(host: &cpal::Host) -> Result<Vec<Device>, String> {
+    let mut out: Vec<Device> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     if let Some(d) = host.default_input_device() {
-        return Ok(d);
+        if let Ok(n) = d.name() {
+            seen.insert(n);
+        }
+        out.push(d);
     }
-    let mut it = host
+    for d in host
         .input_devices()
-        .map_err(|e| format!("Kunne ikke liste lydkort/input: {e}"))?;
-    it.next()
-        .ok_or_else(|| "Fandt ingen mikrofon. Vælg et input under Systemindstillinger → Lyd (eller Lyd, afhængigt af version), og prøv igen.".to_string())
+        .map_err(|e| format!("Kunne ikke liste lydkort/input: {e}"))?
+    {
+        let key = d.name().unwrap_or_default();
+        if key.is_empty() {
+            out.push(d);
+            continue;
+        }
+        if seen.insert(key) {
+            out.push(d);
+        }
+    }
+    Ok(out)
+}
+
+/// Prøv hver fysiske/virtuelle input i rækkefølge, indtil Core Audio svarer. Det løser ofte, at
+/// “Standard”-enheden er i en defekt state, mens en anden (fx indbygget) virker.
+fn pick_device_and_config() -> Result<(Device, SupportedStreamConfig), String> {
+    let host = cpal::default_host();
+    let devices = enumerate_input_devices(&host)?;
+    if devices.is_empty() {
+        return Err(
+            "Fandt ingen mikrofon. Vælg et input under Systemindstillinger → Lyd → Input.".into(),
+        );
+    }
+    let mut last_err: Option<String> = None;
+    for d in devices {
+        let label = d.name().unwrap_or_else(|_| "ukendt enhed".to_string());
+        eprintln!("[Hey Mikkel] Prøver input: {label}");
+        match pick_input_config(&d) {
+            Ok(cfg) => {
+                eprintln!("[Hey Mikkel] Bruger input: {label}");
+                return Ok((d, cfg));
+            }
+            Err(e) => {
+                eprintln!("[Hey Mikkel] {label} — {e}");
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(mic_exhausted_message(last_err))
+}
+
+fn mic_exhausted_message(last: Option<String>) -> String {
+    const TIP: &str = "Hey Mikkel har allerede mikrofontilladelse. Fejlen sidder i macOS' lyd (Core Audio), ikke i tilladelsen. Gør sådan her:\n\
+        1) Systemindstillinger → Lyd → **Input** (ikke under Privatliv) — vælg f.eks. **Indbygget mikrofon** eller en USB/headset, du stoler på.\n\
+        2) Lige et headset eller slå en Bluetooth-mikro fra/til, hvis du bruger sådan en.\n\
+        3) Luk andre der optager lyd (optager, møde-apps).\n\
+        4) Genstart lydchippen (én gang i Terminal, med din Mac-adgangskode): **sudo killall coreaudiod** — lyden kommer straks tilbage; prøg Hey Mikkel igen.";
+
+    if let Some(ref s) = last {
+        if s.len() < 400 && !s.contains("An unknown error unknown") {
+            return format!("{TIP}\n\n(Teknisk: {s})");
+        }
+    }
+    TIP.to_string()
 }
 
 /// Prøv standardformat; ellers vælg et understøttet format (f.eks. hvis default fejler på bestemt hardware).
@@ -74,7 +131,7 @@ fn pick_input_config(device: &Device) -> Result<SupportedStreamConfig, String> {
                 Ok(i) => i.collect(),
                 Err(e) => {
                     return Err(format!(
-                        "Kunne ikke læse mikrofon (standard: {e_default}, understøttede formater: {e}). Tjek Lyd → Input i Systemindstillinger."
+                        "Kunne ikke læse denne enhed (standard: {e_default}, formater: {e})."
                     ));
                 }
             };
@@ -192,11 +249,7 @@ pub fn native_mic_start() -> Result<(), String> {
     if g.is_some() {
         return Err("Optagelse kører allerede.".into());
     }
-    let device = pick_input_device()?;
-    if let Ok(name) = device.name() {
-        eprintln!("[Hey Mikkel] Mikrofon: {name}");
-    }
-    let supported = pick_input_config(&device)?;
+    let (device, supported) = pick_device_and_config()?;
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     let sup = supported;
     let join = std::thread::spawn(move || run_capture(device, stop_rx, sup));
