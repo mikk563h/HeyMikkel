@@ -15,7 +15,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 arboard = "3"
 base64 = "0.22"
+cpal = "0.15"
 device_query = "4.0.1"
+hound = "3.5"
 image = "0.24"
 macos-accessibility-client = "0.0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }

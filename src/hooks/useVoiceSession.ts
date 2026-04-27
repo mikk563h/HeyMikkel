@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { requestNativeMicrophonePermission } from "../macosMicPermission";
-import { acquireUserAudio, audioBlobToBase64, describeMicError } from "../voice/audioUtils";
+import {
+  acquireUserAudio,
+  audioBlobToBase64,
+  base64ToWavBlob,
+  describeMicError,
+} from "../voice/audioUtils";
 import { buildPrompt, shouldReadScreen } from "../voice/prompts";
 import type { AppState } from "../voice/types";
 import { getSettings } from "../voice/settings";
@@ -33,6 +38,8 @@ export function useVoiceSession(options: Options) {
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const audioChunks = useRef<Blob[]>([]);
   const isRecording = useRef(false);
+  /** Tauri: Core Audio (cpal) — ikke WebView getUserMedia (0 enheder på macOS). */
+  const useNativeMicRef = useRef(false);
 
   const insertResult = useCallback(
     async (text?: string) => {
@@ -123,10 +130,28 @@ export function useVoiceSession(options: Options) {
   );
 
   const stopRecording = useCallback(() => {
+    if (useNativeMicRef.current) {
+      if (!isRecording.current) return;
+      isRecording.current = false;
+      useNativeMicRef.current = false;
+      void (async () => {
+        try {
+          const audioBase64 = await invoke<string>("native_mic_stop");
+          const blob = base64ToWavBlob(audioBase64);
+          await finishRecording(blob);
+        } catch (caught) {
+          const text = caught instanceof Error ? caught.message : String(caught);
+          setError(text);
+          setMessage(text);
+          setState("error");
+        }
+      })();
+      return;
+    }
     if (!mediaRecorder.current || !isRecording.current) return;
     isRecording.current = false;
     mediaRecorder.current.stop();
-  }, []);
+  }, [finishRecording]);
 
   const startRecording = useCallback(async () => {
     if (isRecording.current) return;
@@ -138,7 +163,14 @@ export function useVoiceSession(options: Options) {
       setState("listening");
       setMessage("Lytter...");
 
-      await requestNativeMicrophonePermission();
+      if (window.__TAURI_INTERNALS__) {
+        await requestNativeMicrophonePermission();
+        await invoke("native_mic_start");
+        useNativeMicRef.current = true;
+        isRecording.current = true;
+        return;
+      }
+
       const stream = await acquireUserAudio();
       const recorder = new MediaRecorder(stream);
       audioChunks.current = [];
@@ -180,9 +212,13 @@ export function useVoiceSession(options: Options) {
     setError("");
     try {
       await requestNativeMicrophonePermission();
-      const stream = await acquireUserAudio();
-      stream.getTracks().forEach((track) => track.stop());
-      setMessage("Mikrofon virker.");
+      await invoke("native_mic_start");
+      await new Promise((r) => setTimeout(r, 450));
+      const audioBase64 = await invoke<string>("native_mic_stop");
+      if (audioBase64.length < 200) {
+        throw new Error("Fik næsten ingen lyd — tjek at du har sagt ja til mikrofon, og prøv igen.");
+      }
+      setMessage("Mikrofon virker (Core Audio).");
     } catch (caught) {
       setError(describeMicError(caught));
       setMessage("Mikrofon fejlede.");

@@ -15,6 +15,8 @@ use tauri::{
     WindowEvent,
 };
 
+mod mic_native;
+
 /// macOS: skal være "almindelig" forgrundsapp (Regular) for at TCC/Mikrofon-listen i
 /// Systemindstillinger opfatter processen korrekt. Accessory + LSUIElement gav ikke post på listen.
 #[cfg(target_os = "macos")]
@@ -25,33 +27,48 @@ fn set_macos_activation_regular(app: &AppHandle) {
 #[cfg(not(target_os = "macos"))]
 fn set_macos_activation_regular(_app: &AppHandle) {}
 
-/// macOS: anmod om mikrofon via AVFoundation med en **rigtig** completion block. Tredjeparts-plugin brugte `null` som
-/// handler, så TCC-dialogen og posten under Systemindstillinger → Mikrofon udeblev ofte.
-#[cfg(target_os = "macos")]
-fn request_avfoundation_microphone_access() {
-    use block2::RcBlock;
-    use objc2::runtime::Bool;
-    use objc2_av_foundation::{AVCaptureDevice, AVMediaTypeAudio};
-
-    let block = RcBlock::new(|_granted: Bool| {});
-    unsafe {
-        let Some(audio) = AVMediaTypeAudio else {
-            return;
-        };
-        AVCaptureDevice::requestAccessForMediaType_completionHandler(audio, &block);
-    }
-}
-
-/// Kald fra frontend så "Hey Mikkel" vises under Mikrofon i Systemindstillinger (efter prompt).
+/// Kald fra frontend. Skal køre på main thread, med synligt vindue, og vi venter til AVFoundation
+/// har fået svar (ellers ser WebKit ofte 0 lydenheder).
 #[tauri::command]
-fn request_macos_av_microphone() -> Result<(), String> {
+fn request_macos_av_microphone(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        request_avfoundation_microphone_access();
-        return Ok(());
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use block2::RcBlock;
+        use objc2::runtime::Bool;
+        use objc2_av_foundation::{AVCaptureDevice, AVMediaTypeAudio};
+
+        let (tx, rx) = mpsc::channel();
+        let app2 = app.clone();
+        app
+            .run_on_main_thread(move || {
+                if let Some(w) = app2.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+                let tx_block = tx.clone();
+                let block = RcBlock::new(move |_granted: Bool| {
+                    let _ = tx_block.send(());
+                });
+                unsafe {
+                    if let Some(audio) = AVMediaTypeAudio {
+                        AVCaptureDevice::requestAccessForMediaType_completionHandler(audio, &block);
+                    } else {
+                        let _ = tx.send(());
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+
+        rx.recv_timeout(Duration::from_secs(120))
+            .map_err(|_| "Mikrofon: ingen svar fra systemet (ventede på bekræftelse). Prøv igen.".to_string())?;
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = app;
         Ok(())
     }
 }
@@ -463,7 +480,9 @@ pub fn run() {
             show_settings_window,
             hide_main_window,
             open_microphone_privacy,
-            request_macos_av_microphone
+            request_macos_av_microphone,
+            mic_native::native_mic_start,
+            mic_native::native_mic_stop
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

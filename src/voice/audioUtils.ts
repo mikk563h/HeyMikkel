@@ -1,3 +1,11 @@
+/** WAV fra Rust (cpal) → Blob til transskription. */
+export function base64ToWavBlob(base64: string): Blob {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: "audio/wav" });
+}
+
 export function audioBlobToBase64(blob: Blob) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();

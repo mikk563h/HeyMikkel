@@ -4,7 +4,6 @@ import { Clipboard, Mic, Monitor, Settings, Sparkles, X } from "lucide-react";
 import { useVoiceSession } from "./hooks/useVoiceSession";
 import { loadSettings, type Language, type SettingsState } from "./voice/settings";
 import type { DefaultMode } from "./voice/types";
-import { requestNativeMicrophonePermission } from "./macosMicPermission";
 import "./styles.css";
 
 declare global {
@@ -44,13 +43,6 @@ export default function App() {
   useEffect(() => {
     if (!window.__TAURI_INTERNALS__) return;
     void invoke<boolean>("request_accessibility_permission");
-  }, []);
-
-  /** Sørg for at macOS kan vise mikrofon-prompt og tilføje appen til Mikrofon-listen (efter Regular/NSApp). */
-  useEffect(() => {
-    if (!window.__TAURI_INTERNALS__) return;
-    const t = window.setTimeout(() => void requestNativeMicrophonePermission(), 500);
-    return () => window.clearTimeout(t);
   }, []);
 
   const statusText = useMemo(() => {
