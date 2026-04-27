@@ -1,0 +1,68 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Hey Mikkel",
+  "version": "0.1.0",
+  "identifier": "com.heymikkel.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Hey Mikkel",
+        "width": 560,
+        "height": 760,
+        "minWidth": 380,
+        "minHeight": 620,
+        "visible": false,
+        "decorations": false,
+        "shadow": true,
+        "resizable": true,
+        "center": true,
+        "backgroundColor": "#120f0c",
+        "url": "index.html"
+      },
+      {
+        "label": "overlay",
+        "title": "Hey Mikkel",
+        "width": 1920,
+        "height": 1080,
+        "fullscreen": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "resizable": false,
+        "backgroundColor": "#00000000",
+        "url": "overlay.html"
+      }
+    ],
+    "security": {
+      "csp": null,
+      "devCsp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "entitlements": "Entitlements.plist",
+      "infoPlist": "Info.plist"
+    }
+  }
+}

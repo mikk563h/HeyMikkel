@@ -1,0 +1,5 @@
+# Gør stien til build-output forudsigelig. CARGO_TARGET_DIR i miljøet (fx fra Cursor) kan
+# alligevel overskrive; scripts/run-tauri-dev.mjs fjerner CARGO_TARGET_DIR under macOS så
+# både build og codesign peger det samme sted.
+[build]
+target-dir = "target"

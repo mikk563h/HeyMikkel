@@ -1,0 +1,31 @@
+{
+  "name": "hey-mikkel",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:macos": "concurrently -k -n VITE,mic \"npm run dev\" \"node ./scripts/macos-codesign-watcher.mjs\"",
+    "tauri:sign-macos": "node ./scripts/macos-sign-manual.mjs",
+    "tauri:macos:prepare": "cd src-tauri && cargo build && cd .. && npm run tauri:sign-macos",
+    "tauri:macos:app": "npm run build && npm run tauri -- build --debug && node ./scripts/macos-open-debug-app.mjs",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "node ./scripts/run-tauri-dev.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "typescript": "latest",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.0",
+    "@tauri-apps/cli": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "latest"
+  }
+}

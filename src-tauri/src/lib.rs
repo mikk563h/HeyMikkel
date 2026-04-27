@@ -1,0 +1,470 @@
+use std::io::Cursor;
+use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use device_query::{DeviceQuery, DeviceState, Keycode};
+use image::{DynamicImage, ImageOutputFormat};
+use reqwest::multipart::{Form, Part};
+use serde_json::{json, Value};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{
+    AppHandle, Emitter, EventTarget, Manager, PhysicalPosition, PhysicalSize, Runtime, WebviewWindow,
+    WindowEvent,
+};
+
+/// macOS: skal være "almindelig" forgrundsapp (Regular) for at TCC/Mikrofon-listen i
+/// Systemindstillinger opfatter processen korrekt. Accessory + LSUIElement gav ikke post på listen.
+#[cfg(target_os = "macos")]
+fn set_macos_activation_regular(app: &AppHandle) {
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_macos_activation_regular(_app: &AppHandle) {}
+
+/// macOS: anmod om mikrofon via AVFoundation med en **rigtig** completion block. Tredjeparts-plugin brugte `null` som
+/// handler, så TCC-dialogen og posten under Systemindstillinger → Mikrofon udeblev ofte.
+#[cfg(target_os = "macos")]
+fn request_avfoundation_microphone_access() {
+    use block2::RcBlock;
+    use objc2::runtime::Bool;
+    use objc2_av_foundation::{AVCaptureDevice, AVMediaTypeAudio};
+
+    let block = RcBlock::new(|_granted: Bool| {});
+    unsafe {
+        let Some(audio) = AVMediaTypeAudio else {
+            return;
+        };
+        AVCaptureDevice::requestAccessForMediaType_completionHandler(audio, &block);
+    }
+}
+
+/// Kald fra frontend så "Hey Mikkel" vises under Mikrofon i Systemindstillinger (efter prompt).
+#[tauri::command]
+fn request_macos_av_microphone() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        request_avfoundation_microphone_access();
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+async fn transcribe_audio(api_key: String, audio_base64: String, mime_type: String) -> Result<String, String> {
+    if api_key.trim().is_empty() {
+        return Err("OpenAI API key mangler.".into());
+    }
+
+    let audio_bytes = STANDARD
+        .decode(audio_base64)
+        .map_err(|_| "Kunne ikke læse lydoptagelsen.".to_string())?;
+
+    let audio_part = Part::bytes(audio_bytes)
+        .file_name("recording.webm")
+        .mime_str(&mime_type)
+        .map_err(|error| error.to_string())?;
+
+    let form = Form::new()
+        .text("model", "gpt-4o-mini-transcribe")
+        .part("file", audio_part);
+
+    let response = reqwest::Client::new()
+        .post("https://api.openai.com/v1/audio/transcriptions")
+        .bearer_auth(api_key.trim())
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|error| format!("Kunne ikke kontakte OpenAI: {error}"))?;
+
+    let status = response.status();
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("Kunne ikke læse OpenAI-svar: {error}"))?;
+
+    if !status.is_success() {
+        return Err(openai_error_message(&body));
+    }
+
+    body.get("text")
+        .and_then(Value::as_str)
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| "OpenAI returnerede ingen transskription.".to_string())
+}
+
+#[tauri::command]
+async fn ask_ai(
+    api_key: String,
+    system_prompt: String,
+    user_prompt: String,
+    screenshot_base64: Option<String>,
+) -> Result<String, String> {
+    if api_key.trim().is_empty() {
+        return Err("OpenAI API key mangler.".into());
+    }
+
+    let user_content = match screenshot_base64 {
+        Some(image) if !image.trim().is_empty() => json!([
+            {
+                "type": "text",
+                "text": user_prompt
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": format!("data:image/png;base64,{image}")
+                }
+            }
+        ]),
+        _ => json!(user_prompt),
+    };
+
+    let payload = json!({
+        "model": "gpt-4o-mini",
+        "temperature": 0.7,
+        "messages": [
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": user_content
+            }
+        ]
+    });
+
+    let response = reqwest::Client::new()
+        .post("https://api.openai.com/v1/chat/completions")
+        .bearer_auth(api_key.trim())
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("Kunne ikke kontakte OpenAI: {error}"))?;
+
+    let status = response.status();
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("Kunne ikke læse OpenAI-svar: {error}"))?;
+
+    if !status.is_success() {
+        return Err(openai_error_message(&body));
+    }
+
+    body.pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| "OpenAI returnerede intet svar.".to_string())
+}
+
+#[tauri::command]
+fn capture_screen() -> Result<String, String> {
+    let screens = screenshots::Screen::all().map_err(|error| format!("Kunne ikke finde skærme: {error}"))?;
+    let screen = screens
+        .first()
+        .ok_or_else(|| "Ingen skærm fundet.".to_string())?;
+    let image = screen
+        .capture()
+        .map_err(|error| format!("Kunne ikke tage screenshot: {error}"))?;
+
+    let mut png_bytes = Vec::new();
+    DynamicImage::ImageRgba8(image)
+        .write_to(&mut Cursor::new(&mut png_bytes), ImageOutputFormat::Png)
+        .map_err(|error| format!("Kunne ikke gemme screenshot: {error}"))?;
+
+    Ok(STANDARD.encode(png_bytes))
+}
+
+#[tauri::command]
+fn copy_text(text: String) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|error| format!("Clipboard er ikke tilgængeligt: {error}"))?;
+    clipboard
+        .set_text(text)
+        .map_err(|error| format!("Kunne ikke kopiere tekst: {error}"))
+}
+
+#[tauri::command]
+fn insert_text(text: String) -> Result<(), String> {
+    copy_text(text)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("osascript")
+            .args([
+                "-e",
+                r#"tell application "System Events" to keystroke "v" using command down"#,
+            ])
+            .output()
+            .map_err(|error| format!("Kunne ikke indsætte tekst: {error}"))?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err("Direkte indsætning er kun implementeret til macOS i MVP'en.".into());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn set_overlay_interactive(app: AppHandle, interactive: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("overlay") {
+        window
+            .set_ignore_cursor_events(!interactive)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn show_settings_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.show().map_err(|error| error.to_string())?;
+        let _ = window.set_focus();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_main_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Åbner macOS systempanelet for mikrofontilladelse.
+#[tauri::command]
+fn open_microphone_privacy() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+            .status()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn request_accessibility_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos_accessibility_client::accessibility::application_is_trusted_with_prompt()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+fn openai_error_message(body: &Value) -> String {
+    body.pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or("OpenAI returnerede en fejl.")
+        .to_string()
+}
+
+fn is_option_key(key: &Keycode) -> bool {
+    matches!(
+        key,
+        Keycode::LOption | Keycode::ROption | Keycode::LAlt | Keycode::RAlt
+    )
+}
+
+/// Tillad kun tastaturkombinationer der kun bruger modifiers (⌘, shift, option, ctrl, caps).
+/// Ellers blokerer fx Caps Lock eller en hånd på Shift "hold kun Option".
+fn is_modifier_only_key(key: &Keycode) -> bool {
+    matches!(
+        key,
+        Keycode::LControl
+            | Keycode::RControl
+            | Keycode::LShift
+            | Keycode::RShift
+            | Keycode::LAlt
+            | Keycode::RAlt
+            | Keycode::LOption
+            | Keycode::ROption
+            | Keycode::Command
+            | Keycode::RCommand
+            | Keycode::LMeta
+            | Keycode::RMeta
+            | Keycode::CapsLock
+    )
+}
+
+fn ptt_chord_ok(keys: &[Keycode]) -> bool {
+    let option_is_down = keys.iter().any(is_option_key);
+    option_is_down && keys.iter().all(|k| is_modifier_only_key(k))
+}
+
+/// Fuldskærm uden macOS "eksklusiv fuldskærm" (som giver sort canvas) — fylder primær skærm.
+fn apply_overlay_to_primary<R: Runtime>(overlay: &WebviewWindow<R>) -> Result<(), String> {
+    let mon = overlay
+        .primary_monitor()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Ingen skærm fundet.".to_string())?;
+    let pos = mon.position();
+    let size = mon.size();
+    overlay
+        .set_fullscreen(false)
+        .map_err(|e| e.to_string())?;
+    overlay
+        .set_position(PhysicalPosition::new(pos.x, pos.y))
+        .map_err(|e| e.to_string())?;
+    overlay
+        .set_size(PhysicalSize::new(size.width, size.height))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn start_command_hold_listener(app_handle: AppHandle) {
+    thread::spawn(move || {
+        #[cfg(target_os = "macos")]
+        {
+            // Uden Accessibility returnerer device_query ingen taster — vis systemdialog og vent.
+            let _ = macos_accessibility_client::accessibility::application_is_trusted_with_prompt();
+            while !macos_accessibility_client::accessibility::application_is_trusted() {
+                thread::sleep(Duration::from_millis(500));
+            }
+        }
+
+        let device_state = DeviceState::new();
+        let mut is_talking = false;
+        let mut pending_since: Option<Instant> = None;
+
+        loop {
+            let keys = device_state.get_keys();
+            let chord_ok = ptt_chord_ok(&keys);
+
+            if chord_ok {
+                if !is_talking {
+                    let started_at = pending_since.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() >= Duration::from_millis(180) {
+                        if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                            let _ = apply_overlay_to_primary(&overlay);
+                            let _ = overlay.set_always_on_top(true);
+                            let _ = overlay.show();
+                            let _ = overlay.set_ignore_cursor_events(false);
+                        }
+                        let _ = app_handle.emit_to(
+                            EventTarget::webview_window("overlay"),
+                            "push-to-talk-start",
+                            (),
+                        );
+                        is_talking = true;
+                    }
+                }
+            } else {
+                if !is_talking {
+                    pending_since = None;
+                }
+            }
+
+            if !keys.iter().any(is_option_key) {
+                pending_since = None;
+                if is_talking {
+                    let _ = app_handle.emit_to(
+                        EventTarget::webview_window("overlay"),
+                        "push-to-talk-stop",
+                        (),
+                    );
+                    is_talking = false;
+                }
+            }
+
+            thread::sleep(Duration::from_millis(30));
+        }
+    });
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
+        .setup(|app| {
+            set_macos_activation_regular(&app.handle());
+
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.hide();
+            }
+
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                let _ = apply_overlay_to_primary(&overlay);
+                let _ = overlay.set_ignore_cursor_events(true);
+                let _ = overlay.hide();
+            }
+
+            let settings_i = MenuItem::with_id(app, "settings", "Indstillinger…", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Afslut Hey Mikkel", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&settings_i, &quit_i])?;
+
+            let mut tray = TrayIconBuilder::new().menu(&menu);
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(icon) = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png"))
+                {
+                    tray = tray.icon(icon).icon_as_template(true);
+                } else if let Some(icon) = app.default_window_icon() {
+                    tray = tray.icon(icon.clone());
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                if let Some(icon) = app.default_window_icon() {
+                    tray = tray.icon(icon.clone());
+                }
+            }
+
+            let _ = tray
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "settings" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .build(app)?;
+
+            start_command_hold_listener(app.handle().clone());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            transcribe_audio,
+            ask_ai,
+            capture_screen,
+            copy_text,
+            insert_text,
+            request_accessibility_permission,
+            set_overlay_interactive,
+            show_settings_window,
+            hide_main_window,
+            open_microphone_privacy,
+            request_macos_av_microphone
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

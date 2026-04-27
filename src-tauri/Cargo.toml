@@ -1,0 +1,36 @@
+[package]
+name = "hey-mikkel"
+version = "0.1.0"
+description = "Local AI voice assistant for LinkedIn replies and polished dictation."
+authors = ["Hey Mikkel"]
+edition = "2021"
+
+[lib]
+name = "hey_mikkel_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+arboard = "3"
+base64 = "0.22"
+device_query = "4.0.1"
+image = "0.24"
+macos-accessibility-client = "0.0.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+screenshots = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+
+# AVFoundation: requestAccess med rigtig completion block (se tauri-plugin-macos-permissions 2.3.0 som brugte null).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "AVMediaFormat",
+  "AVCaptureDevice",
+] }

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.heymikkel.desktop</string>
+  <key>CFBundleDisplayName</key>
+  <string>Hey Mikkel</string>
+  <key>CFBundleName</key>
+  <string>Hey Mikkel</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Hey Mikkel bruger mikrofonen til at optage det, du siger, så det kan omskrives til tekst med AI. Tillad for at bruge appen med stemme.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Hey Mikkel bruger skærmoptagelse, når du beder den om at læse det, der står på skærmen.</string>
+</dict>
+</plist>
