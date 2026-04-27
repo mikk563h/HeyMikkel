@@ -47,6 +47,14 @@ On macOS, the app may ask for microphone, screen recording, accessibility and au
 
 If you see `Invalid constraint` or `0 devices` in the terminal, restart the Tauri app after the first start. Also confirm Hey Mikkel is enabled for Microphone in System Settings.
 
+### No “Sound in” / input devices in macOS (e.g. Mac mini)
+
+If **System Settings → Sound → Sound in** says **no input devices**, the OS is not exposing any microphone. **Desktop Macs (mini, Studio, Pro) often have no built-in mic** — connect a **USB mic, USB headset, or interface**. The app cannot invent hardware. After plugging in, check **Sound in** again, try `sudo killall coreaudiod` in Terminal, or reboot.
+
+### Work on another computer
+
+See [ARBEJD-ANDEN-MAC.md](./ARBEJD-ANDEN-MAC.md) (Danish) for GitHub + clone + `npm install` + `npm run tauri dev` on a second machine.
+
 ## MVP test flow
 
 1. Open the app and add an OpenAI API key.

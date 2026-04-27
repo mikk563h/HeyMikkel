@@ -192,10 +192,13 @@ export default function App() {
                 for at <strong>appene må bruge/ændre mikrofon</strong> — eller flyt <strong>Hey Mikkel.app</strong> ind i
                 mappen <strong>Programmer</strong> og kør appen derfra, genstart evt. Mac.
                 <br />
-                <strong>Fejl med lyd, selv når “Mikrofon” for Hey Mikkel er tændt?</strong> Du skal også under{" "}
-                <strong>Lyd</strong> vælge fanen <strong>Lyd ind</strong> (ikke <strong>Lyd ud</strong> / højtalere)
-                — brug knappen <strong>«Åbn Lyd — vælg fanen Lyd ind»</strong> nedenfor, så åbner macOS det
-                rigtige sted.
+                <strong>Står der «Ingen enheder til lyd ind» i Systemindstillinger?</strong> Så har Mac’en ingen
+                mikrofon til rådighed — fx <strong>Mac mini</strong> har som regel <strong>ingen indbygget</strong>{" "}
+                mik; tilslut <strong>USB-headset / USB-mik</strong>, indtil Lyd ind viser mindst én enhed.
+                <br />
+                <strong>Fejl med lyd, selv når “Mikrofon” for Hey Mikkel er tændt?</strong> Vælg fanen{" "}
+                <strong>Lyd ind</strong> (ikke <strong>Lyd ud</strong>) — knappen{" "}
+                <strong>«Åbn Lyd — vælg fanen Lyd ind»</strong> går direkte derhen.
                 <br />
                 <strong>Udvikling (tauri dev):</strong> kør <code>npm run tauri:macos:prepare</code> en gang, derefter{" "}
                 <code>npm run tauri dev</code> (bruger nu lokal <code>target</code> uden Cursors ekstra sti). Tjek

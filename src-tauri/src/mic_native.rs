@@ -86,7 +86,10 @@ fn pick_device_and_config() -> Result<(Device, SupportedStreamConfig), String> {
     let devices = enumerate_input_devices(&host)?;
     if devices.is_empty() {
         return Err(
-            "Fandt ingen mikrofon. Vælg et input under Systemindstillinger → Lyd → Input.".into(),
+            "macOS rapporterer **ingen lyd-INPUT** (0 enheder). Det kan Hey Mikkel ikke rette i koden — der skal findes fysisk mikrofon-klargøring.\n\n\
+**Mac mini, Mac Studio, Mac Pro** har **ingen indbygget mikrofon**. Tilslut f.eks. et **USB-headset, USB-mikrofon, Thunderbolt-lydkort** eller kobl et **headset med mikrofon** til. Når Lyd → Lyd ind viser mindst **én** enhed, virker appen som regel.\n\n\
+**Efter** du har tilsluttet: prøv **Terminal** → `sudo killall coreaudiod` (adgangskode) og tjek Lyd igen. Genstart Mac hvis nødvendigt."
+                .into(),
         );
     }
     let mut last_err: Option<String> = None;
@@ -108,11 +111,12 @@ fn pick_device_and_config() -> Result<(Device, SupportedStreamConfig), String> {
 }
 
 fn mic_exhausted_message(last: Option<String>) -> String {
-    const TIP: &str = "Hey Mikkel har ofte allerede mikrofontilladelse. Fejlen sidder i **hvilket lyd-INPUT** macOS bruger. Gør sådan her:\n\
-        1) Klik i Hey Mikkel på **«Åbn Lyd — vælg fanen Lyd ind»** — du skal se **Lyd ind**, ikke fanen *Lyd ud* / højtalere. Vælg f.eks. **Indbygget mikrofon** eller USB/headset.\n\
-        2) Lige et headset eller slå en Bluetooth-mikro fra/til, hvis du bruger sådan en.\n\
-        3) Luk andre der optager lyd (optager, møde-apps).\n\
-        4) Genstart lydchippen (én gang i Terminal: **sudo killall coreaudiod**), og prøv Hey Mikkel igen.";
+    const TIP: &str = "Hvis Lyd → Lyd ind siger **«Ingen enheder»** eller intet virker: mange **Mac mini**-modeller har **ingen** indbygget mik — tilslut **USB-mik, headset** eller andet, der faktisk giver lyd *ind*.\n\n\
+        Ellers: Hey Mikkel har ofte allerede mikrofontilladelse. Så gælder **hvilket lyd-INPUT** macOS bruger. Gør sådan her:\n\
+        1) Klik **«Åbn Lyd — vælg fanen Lyd ind»** i Hey Mikkel. Vælg f.eks. **Indbygget** (på bærbar) eller **USB/headset** (især på skrivebords-Mac).\n\
+        2) Bluetooth/headset: lige det fra/til, eller brug kabel-USB hvis det driller.\n\
+        3) Luk andre optagere (Zoom, møde, DAW).\n\
+        4) Terminal: **sudo killall coreaudiod** — prøv igen.";
 
     if let Some(ref s) = last {
         if s.len() < 400 && !s.contains("An unknown error unknown") {
