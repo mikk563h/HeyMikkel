@@ -42,10 +42,19 @@ export async function acquireUserAudio() {
 }
 
 export function describeMicError(caught: unknown) {
+  if (typeof caught === "string" && caught.trim().length > 0) {
+    return caught;
+  }
   if (caught instanceof Error) {
-    const m = caught.message.toLowerCase();
-    if (m.includes("not allowed") || m.includes("denied") || m.includes("permission") || m.includes("securityerror")) {
-      return "Mikrofon blev afvist. Gå til Systemindstillinger → Fortrolighed og sikkerhed → Mikrofon, og slå Hey Mikkel til (eller kør igen efter en genstart af appen).";
+    const msg = caught.message;
+    if (msg.trim().length > 0) {
+      const m = msg.toLowerCase();
+      if (m.includes("not allowed") || m.includes("denied") || m.includes("permission") || m.includes("securityerror")) {
+        return "Mikrofon blev afvist. Gå til Systemindstillinger → Fortrolighed og sikkerhed → Mikrofon, og slå Hey Mikkel til (eller kør igen efter en genstart af appen).";
+      }
+      if (!/^invoke\s+/.test(m) && msg.length > 5) {
+        return msg;
+      }
     }
   }
 

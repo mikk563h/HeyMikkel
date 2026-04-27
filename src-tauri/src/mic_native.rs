@@ -7,7 +7,7 @@ use std::sync::{Mutex, OnceLock};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{InputCallbackInfo, SampleFormat, Stream, SupportedStreamConfig};
+use cpal::{Device, InputCallbackInfo, SampleFormat, Stream, SupportedStreamConfig};
 use hound::{SampleFormat as HoundSampleFormat, WavSpec, WavWriter};
 
 struct Active {
@@ -52,19 +52,63 @@ fn push_f32(buf: &std::sync::Arc<Mutex<Vec<f32>>>, data: &[f32]) {
     }
 }
 
-fn run_capture(stop_rx: Receiver<()>, supported: SupportedStreamConfig) -> Result<Vec<u8>, String> {
+/// Standard-input, ellers første enhed i listen, der faktisk understøtter input.
+fn pick_input_device() -> Result<Device, String> {
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| "Ingen input-enhed. Tillad evt. Mikrofon for Hey Mikkel (Systemindstillinger).".to_string())?;
+    if let Some(d) = host.default_input_device() {
+        return Ok(d);
+    }
+    let mut it = host
+        .input_devices()
+        .map_err(|e| format!("Kunne ikke liste lydkort/input: {e}"))?;
+    it.next()
+        .ok_or_else(|| "Fandt ingen mikrofon. Vælg et input under Systemindstillinger → Lyd (eller Lyd, afhængigt af version), og prøv igen.".to_string())
+}
 
+/// Prøv standardformat; ellers vælg et understøttet format (f.eks. hvis default fejler på bestemt hardware).
+fn pick_input_config(device: &Device) -> Result<SupportedStreamConfig, String> {
+    match device.default_input_config() {
+        Ok(c) => Ok(c),
+        Err(e_default) => {
+            let ranges: Vec<cpal::SupportedStreamConfigRange> = match device.supported_input_configs() {
+                Ok(i) => i.collect(),
+                Err(e) => {
+                    return Err(format!(
+                        "Kunne ikke læse mikrofon (standard: {e_default}, understøttede formater: {e}). Tjek Lyd → Input i Systemindstillinger."
+                    ));
+                }
+            };
+            if ranges.is_empty() {
+                return Err(format!(
+                    "Mikrofonen svarer ikke (standard: {e_default}, ingen andre formater). Prøv en anden input-enhed i macOS-lydindstillinger."
+                ));
+            }
+            for fmt in [
+                SampleFormat::F32,
+                SampleFormat::I16,
+                SampleFormat::I32,
+                SampleFormat::F64,
+                SampleFormat::I8,
+            ] {
+                if let Some(r) = ranges.iter().find(|r| r.sample_format() == fmt) {
+                    return Ok(r.with_max_sample_rate());
+                }
+            }
+            Ok(ranges[0].with_max_sample_rate())
+        }
+    }
+}
+
+/// **Vigtigt:** `device` skal være den *samme* enhed, som `supported` kommer fra — ellers fejler
+/// `build_input_stream` ofte, selv når TCC-mikrofon er slået til.
+fn run_capture(device: Device, stop_rx: Receiver<()>, supported: SupportedStreamConfig) -> Result<Vec<u8>, String> {
     let sc = supported.config();
     let sample_rate = supported.sample_rate().0;
     let ch = supported.channels();
     let buffer = std::sync::Arc::new(Mutex::new(Vec::<f32>::new()));
     let buf = buffer.clone();
 
-    let err_fn = |e| eprintln!("[Hey Mikkel] cpal: {e}");
+    let err_fn = |e| eprintln!("[Hey Mikkel] cpal stream: {e}");
 
     let stream: Result<Stream, cpal::BuildStreamError> = match supported.sample_format() {
         SampleFormat::F32 => device.build_input_stream(
@@ -126,12 +170,14 @@ fn run_capture(stop_rx: Receiver<()>, supported: SupportedStreamConfig) -> Resul
             None,
         ),
         fmt => {
-            return Err(format!("Mikrofon: lydformat {fmt:?} er ikke understøttet i MVP."));
+            return Err(format!("Mikrofon: lydformat {fmt:?} er ikke understøttet i MVP. Vælg et andet input i Lydindstillinger."));
         }
     };
 
-    let stream = stream.map_err(|e| format!("Kunne ikke åbne mikrofon (TCC/ hardware): {e}"))?;
-    stream.play().map_err(|e| e.to_string())?;
+    let stream = stream.map_err(|e| {
+        format!("Kunne ikke åbne lydstrøm (mikrofon er tilladt i Systemindstillinger, men lydkort/ format fejlede: {e})")
+    })?;
+    stream.play().map_err(|e| format!("Kunne ikke starte lydstrøm: {e}"))?;
 
     let _ = stop_rx.recv();
     drop(stream);
@@ -146,16 +192,14 @@ pub fn native_mic_start() -> Result<(), String> {
     if g.is_some() {
         return Err("Optagelse kører allerede.".into());
     }
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| "Ingen input-enhed. Giv Hey Mikkel mikrofontilladelse (Systemindstillinger).".to_string())?;
-    let supported = device
-        .default_input_config()
-        .map_err(|e| format!("Kunne ikke læse standard-mikrofon: {e}"))?;
+    let device = pick_input_device()?;
+    if let Ok(name) = device.name() {
+        eprintln!("[Hey Mikkel] Mikrofon: {name}");
+    }
+    let supported = pick_input_config(&device)?;
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     let sup = supported;
-    let join = std::thread::spawn(move || run_capture(stop_rx, sup));
+    let join = std::thread::spawn(move || run_capture(device, stop_rx, sup));
     *g = Some(Active { stop_tx, join });
     Ok(())
 }
