@@ -108,11 +108,11 @@ fn pick_device_and_config() -> Result<(Device, SupportedStreamConfig), String> {
 }
 
 fn mic_exhausted_message(last: Option<String>) -> String {
-    const TIP: &str = "Hey Mikkel har allerede mikrofontilladelse. Fejlen sidder i macOS' lyd (Core Audio), ikke i tilladelsen. Gør sådan her:\n\
-        1) Systemindstillinger → Lyd → **Input** (ikke under Privatliv) — vælg f.eks. **Indbygget mikrofon** eller en USB/headset, du stoler på.\n\
+    const TIP: &str = "Hey Mikkel har ofte allerede mikrofontilladelse. Fejlen sidder i **hvilket lyd-INPUT** macOS bruger. Gør sådan her:\n\
+        1) Klik i Hey Mikkel på **«Åbn Lyd — vælg fanen Lyd ind»** — du skal se **Lyd ind**, ikke fanen *Lyd ud* / højtalere. Vælg f.eks. **Indbygget mikrofon** eller USB/headset.\n\
         2) Lige et headset eller slå en Bluetooth-mikro fra/til, hvis du bruger sådan en.\n\
         3) Luk andre der optager lyd (optager, møde-apps).\n\
-        4) Genstart lydchippen (én gang i Terminal, med din Mac-adgangskode): **sudo killall coreaudiod** — lyden kommer straks tilbage; prøg Hey Mikkel igen.";
+        4) Genstart lydchippen (én gang i Terminal: **sudo killall coreaudiod**), og prøv Hey Mikkel igen.";
 
     if let Some(ref s) = last {
         if s.len() < 400 && !s.contains("An unknown error unknown") {

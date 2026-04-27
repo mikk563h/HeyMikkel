@@ -277,12 +277,47 @@ fn hide_main_window(app: AppHandle) -> Result<(), String> {
 fn open_microphone_privacy() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
-            .status()
-            .map_err(|e| e.to_string())?;
+        for url in [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+        ] {
+            if std::process::Command::new("open")
+                .arg(url)
+                .status()
+                .map(|c| c.success())
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+        }
     }
     Ok(())
+}
+
+/// Fanen **Lyd ind** (hvilket kort/mikrofon der bruges) — ikke det samme som Privatliv → Mikrofon.
+#[tauri::command]
+fn open_sound_input_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        for url in [
+            "x-apple.systempreferences:com.apple.Sound-Settings.extension?input",
+            "x-apple.systempreferences:com.apple.Sound-Settings.extension",
+        ] {
+            if std::process::Command::new("open")
+                .arg(url)
+                .status()
+                .map(|c| c.success())
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+        }
+        return Err("Kunne ikke åbne Lyd. Gå manuelt til Systemindstillinger → Lyd → Lyd ind.".to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
 }
 
 /// Ofte nødvendigt hvis Skærmtid/Indhold låser forældrekontrol for mikrofon (grå toggle).
@@ -516,6 +551,7 @@ pub fn run() {
             show_settings_window,
             hide_main_window,
             open_microphone_privacy,
+            open_sound_input_settings,
             open_screentime_settings,
             request_macos_av_microphone,
             mic_native::native_mic_start,

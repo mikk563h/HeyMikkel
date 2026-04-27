@@ -148,10 +148,19 @@ export default function App() {
         {state === "error" && (
           <div className="error-box error-box--actions">
             <p>{error}</p>
-            {/mikrofon|microphone|not allowed/i.test(error) && window.__TAURI_INTERNALS__ ? (
+            {/mikrofon|microphone|Lyd|Input|lyd|input|optag|Core|enhed|sudo|Hey|afvist|not allowed|privatliv|Fortrolig/i.test(
+              error,
+            ) && window.__TAURI_INTERNALS__ ? (
               <div className="error-actions">
+                <button
+                  type="button"
+                  className="mic-guide-primary"
+                  onClick={() => void invoke("open_sound_input_settings")}
+                >
+                  Åbn Lyd — vælg fanen Lyd ind
+                </button>
                 <button type="button" className="inline-button" onClick={() => void invoke("open_microphone_privacy")}>
-                  Åbn Mikrofon i Systemindstillinger
+                  Åbn Fortrolighed — Mikrofon
                 </button>
               </div>
             ) : null}
@@ -183,13 +192,21 @@ export default function App() {
                 for at <strong>appene må bruge/ændre mikrofon</strong> — eller flyt <strong>Hey Mikkel.app</strong> ind i
                 mappen <strong>Programmer</strong> og kør appen derfra, genstart evt. Mac.
                 <br />
+                <strong>Fejl med lyd, selv når “Mikrofon” for Hey Mikkel er tændt?</strong> Du skal også under{" "}
+                <strong>Lyd</strong> vælge fanen <strong>Lyd ind</strong> (ikke <strong>Lyd ud</strong> / højtalere)
+                — brug knappen <strong>«Åbn Lyd — vælg fanen Lyd ind»</strong> nedenfor, så åbner macOS det
+                rigtige sted.
+                <br />
                 <strong>Udvikling (tauri dev):</strong> kør <code>npm run tauri:macos:prepare</code> en gang, derefter{" "}
                 <code>npm run tauri dev</code> (bruger nu lokal <code>target</code> uden Cursors ekstra sti). Tjek
                 listen for <code>hey-mikkel</code> hvis navnet ikke vises som "Hey Mikkel".
               </p>
               <ol className="mic-steps">
                 <li>
-                  Klik <strong>Tillad mikrofon herunder</strong>.
+                  Hvis lyd fejler: klik <strong>«Åbn Lyd — vælg fanen Lyd ind»</strong> (ikke fanen Lyd ud).
+                </li>
+                <li>
+                  Klik <strong>Test mikrofon</strong> nedenfor.
                 </li>
                 <li>
                   Hvis et macOS-vindue spørger, vælg <strong>OK</strong>.
@@ -201,11 +218,18 @@ export default function App() {
                 </li>
               </ol>
               <div className="mic-guide-actions">
-                <button type="button" className="mic-guide-primary" onClick={() => void testMicrophone()}>
-                  Tillad mikrofon
+                <button
+                  type="button"
+                  className="mic-guide-primary"
+                  onClick={() => void invoke("open_sound_input_settings")}
+                >
+                  Åbn Lyd — vælg fanen Lyd ind
+                </button>
+                <button type="button" className="inline-button" onClick={() => void testMicrophone()}>
+                  Test mikrofon
                 </button>
                 <button type="button" className="inline-button" onClick={() => void invoke("open_microphone_privacy")}>
-                  Åbn mikrofon-panelet
+                  Åbn Fortrolighed — Mikrofon
                 </button>
                 <button type="button" className="inline-button" onClick={() => void invoke("open_screentime_settings")}>
                   Åbn Skærmtid (hvis “Mikrofon” er låst)

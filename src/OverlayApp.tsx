@@ -224,14 +224,25 @@ export function OverlayApp() {
         <div className="hm-toast">
           <p>{error}</p>
           <div className="hm-toast-actions">
-            {/mikrofon|microphone|not allowed|afvist/i.test(error) && window.__TAURI_INTERNALS__ ? (
-              <button
-                type="button"
-                className="hm-toast-btn hm-toast-btn--secondary"
-                onClick={() => void invoke("open_microphone_privacy")}
-              >
-                Mikrofon-tilladelse
-              </button>
+            {/mikrofon|microphone|Lyd|Input|lyd|input|optag|Core|enhed|Hey|afvist|not allowed|privatliv|Fortrolig/i.test(
+              error,
+            ) && window.__TAURI_INTERNALS__ ? (
+              <>
+                <button
+                  type="button"
+                  className="hm-toast-btn"
+                  onClick={() => void invoke("open_sound_input_settings")}
+                >
+                  Lyd → Lyd ind
+                </button>
+                <button
+                  type="button"
+                  className="hm-toast-btn hm-toast-btn--secondary"
+                  onClick={() => void invoke("open_microphone_privacy")}
+                >
+                  Fortrolighed → Mikrofon
+                </button>
+              </>
             ) : null}
             <button type="button" className="hm-toast-btn" onClick={onDismissError}>
               OK
