@@ -1,11 +1,8 @@
-use std::io::Cursor;
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use device_query::{DeviceQuery, DeviceState, Keycode};
-use image::{DynamicImage, ImageOutputFormat};
 use reqwest::multipart::{Form, Part};
 use serde_json::{json, Value};
 use tauri::menu::{Menu, MenuItem};
@@ -166,24 +163,25 @@ async fn ask_ai(
         return Err("OpenAI API key mangler.".into());
     }
 
-    let user_content = match screenshot_base64 {
-        Some(image) if !image.trim().is_empty() => json!([
-            {
-                "type": "text",
-                "text": user_prompt
-            },
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": format!("data:image/png;base64,{image}")
+    let (model, user_content) = match screenshot_base64 {
+        Some(image) if !image.trim().is_empty() => (
+            "gpt-4o",
+            json!([
+                { "type": "text", "text": user_prompt },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:image/png;base64,{image}"),
+                        "detail": "high"
+                    }
                 }
-            }
-        ]),
-        _ => json!(user_prompt),
+            ]),
+        ),
+        _ => ("gpt-4o-mini", json!(user_prompt)),
     };
 
     let payload = json!({
-        "model": "gpt-4o-mini",
+        "model": model,
         "temperature": 0.7,
         "messages": [
             {
@@ -224,20 +222,28 @@ async fn ask_ai(
 
 #[tauri::command]
 fn capture_screen() -> Result<String, String> {
-    let screens = screenshots::Screen::all().map_err(|error| format!("Kunne ikke finde skærme: {error}"))?;
-    let screen = screens
-        .first()
-        .ok_or_else(|| "Ingen skærm fundet.".to_string())?;
-    let image = screen
-        .capture()
-        .map_err(|error| format!("Kunne ikke tage screenshot: {error}"))?;
+    // screencapture bruger ScreenCaptureKit internt og virker på macOS 14–16.
+    // CGWindowListCreateImage (screenshots-crate) er fjernet i macOS 16 Tahoe.
+    let tmp = std::env::temp_dir().join("heymikkel_cap.png");
 
-    let mut png_bytes = Vec::new();
-    DynamicImage::ImageRgba8(image)
-        .write_to(&mut Cursor::new(&mut png_bytes), ImageOutputFormat::Png)
-        .map_err(|error| format!("Kunne ikke gemme screenshot: {error}"))?;
+    let output = std::process::Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-m", &tmp.to_string_lossy()])
+        .output()
+        .map_err(|e| format!("SCREEN_PERMISSION: Kunne ikke starte screencapture: {e}"))?;
 
-    Ok(STANDARD.encode(png_bytes))
+    if !output.status.success() {
+        return Err("SCREEN_PERMISSION: Skærmoptagelse fejlede — slå Hey Mikkel til under Fortrolighed → Skærmoptagelse og genstart Hey Mikkel.".to_string());
+    }
+
+    let bytes = std::fs::read(&tmp)
+        .map_err(|_| "SCREEN_PERMISSION: Screenshot-fil mangler — genstart Hey Mikkel og prøv igen.".to_string())?;
+    let _ = std::fs::remove_file(&tmp);
+
+    if bytes.len() < 1000 {
+        return Err("SCREEN_PERMISSION: Screenshot er tomt — genstart Hey Mikkel efter at have givet tilladelse under Fortrolighed → Skærmoptagelse.".to_string());
+    }
+
+    Ok(STANDARD.encode(bytes))
 }
 
 #[tauri::command]
@@ -269,6 +275,109 @@ fn insert_text(text: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Skjuler overlay FØRST (så forrige app får fokus igen), venter 180 ms, indsætter derefter.
+/// Løser problemet hvor Cmd+V gik til overlay-vinduet i stedet for teksteditor/browser.
+#[tauri::command]
+async fn insert_text_from_overlay(app: AppHandle, text: String) -> Result<(), String> {
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.set_ignore_cursor_events(true);
+        let _ = overlay.hide();
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        thread::sleep(Duration::from_millis(180));
+        insert_text(text)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Trigrer PTT-flow manuelt (3 sek) uden at kræve Option-tast eller Accessibility.
+/// Bruges til at verificere at overlay + mikrofon + transskription virker.
+#[tauri::command]
+async fn trigger_ptt_test(app: AppHandle) -> Result<(), String> {
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        apply_overlay_to_primary(&overlay)?;
+        let _ = overlay.set_always_on_top(true);
+        let _ = overlay.show();
+        let _ = overlay.set_ignore_cursor_events(false);
+    }
+    let _ = app.emit_to(EventTarget::webview_window("overlay"), "push-to-talk-start", ());
+    tauri::async_runtime::spawn_blocking(|| thread::sleep(Duration::from_millis(3000)))
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit_to(EventTarget::webview_window("overlay"), "push-to-talk-stop", ());
+    Ok(())
+}
+
+/// Spiller macOS system-lyd via afplay — omgår WebKit AudioContext-restriktionen.
+#[tauri::command]
+fn play_ui_sound(sound: String) {
+    #[cfg(target_os = "macos")]
+    {
+        let path = match sound.as_str() {
+            "start" => "/System/Library/Sounds/Tink.aiff",
+            "stop"  => "/System/Library/Sounds/Pop.aiff",
+            _       => return,
+        };
+        let _ = std::process::Command::new("afplay")
+            .args([path, "-v", "0.55"])
+            .spawn();
+    }
+}
+
+/// Returnerer om Hey Mikkel har skærmoptagelse-tilladelse.
+/// CGPreflightScreenCaptureAccess returnerer true/false uden at vise TCC-dialog (macOS 10.15+).
+#[tauri::command]
+fn get_screen_recording_status() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGPreflightScreenCaptureAccess() -> bool;
+        }
+        unsafe { CGPreflightScreenCaptureAccess() }
+    }
+    #[cfg(not(target_os = "macos"))]
+    { true }
+}
+
+/// Anmoder eksplicit om skærmoptagelse-tilladelse via CGRequestScreenCaptureAccess (macOS 10.15+).
+/// Viser TCC-dialog én gang hvis tilladelse mangler. Kalder `open_screen_recording_settings` bagefter.
+#[tauri::command]
+fn request_screen_recording_permission(app: AppHandle) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGRequestScreenCaptureAccess() -> bool;
+        }
+        let _ = app;
+        let granted = unsafe { CGRequestScreenCaptureAccess() };
+        if !granted {
+            let _ = open_screen_recording_settings();
+        }
+        granted
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        true
+    }
+}
+
+/// Returnerer om macOS Accessibility er accorderet (device_query kræver det for at se Option-tasten).
+#[tauri::command]
+fn get_accessibility_status() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos_accessibility_client::accessibility::application_is_trusted()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
 }
 
 #[tauri::command]
@@ -371,6 +480,85 @@ fn open_screentime_settings() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_screen_recording_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        for url in [
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture",
+        ] {
+            let s = std::process::Command::new("open").arg(url).status();
+            if s.map(|c| c.success()).unwrap_or(false) {
+                return Ok(());
+            }
+        }
+        return Err("Kunne ikke åbne Skærmoptagelse — åbn manuelt under Systemindstillinger → Fortrolighed → Skærmoptagelse.".to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn create_calendar_event(
+    title: String,
+    date: String,       // YYYY-MM-DD
+    start_time: String, // HH:MM
+    end_time: String,   // HH:MM
+    location: String,
+    notes: String,
+) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Byg AppleScript der opretter begivenhed i den første tilgængelige kalender
+        let script = format!(
+            r#"
+set startStr to "{date} {start_time}:00"
+set endStr to "{date} {end_time}:00"
+tell application "Calendar"
+    set targetCal to first calendar whose writable is true
+    tell targetCal
+        set newEvent to make new event with properties {{summary:"{title}", start date:date startStr, end date:date endStr}}
+        if "{location}" is not "" then
+            set location of newEvent to "{location}"
+        end if
+        if "{notes}" is not "" then
+            set description of newEvent to "{notes}"
+        end if
+    end tell
+    reload calendars
+end tell
+return "OK"
+"#,
+            title = title.replace('"', "'"),
+            date = date,
+            start_time = start_time,
+            end_time = end_time,
+            location = location.replace('"', "'"),
+            notes = notes.replace('"', "'"),
+        );
+
+        let output = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+            .map_err(|e| format!("Kunne ikke køre osascript: {e}"))?;
+
+        if output.status.success() {
+            Ok(format!("Begivenhed oprettet: {} d. {} kl. {}", title, date, start_time))
+        } else {
+            let err = String::from_utf8_lossy(&output.stderr).to_string();
+            Err(format!("Kalender-fejl: {err}"))
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(format!("Begivenhed oprettet: {title}"))
+    }
+}
+
+#[tauri::command]
 fn open_accessibility_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -396,6 +584,15 @@ fn open_accessibility_settings() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn restart_app() {
+    // Genstart processen — nødvendigt for at macOS TCC-cache opdateres efter ny tilladelse.
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe).spawn();
+    }
+    std::process::exit(0);
+}
+
+#[tauri::command]
 fn request_accessibility_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -415,36 +612,23 @@ fn openai_error_message(body: &Value) -> String {
         .to_string()
 }
 
-fn is_option_keycode(key: &Keycode) -> bool {
-    matches!(
-        key,
-        Keycode::LOption | Keycode::ROption | Keycode::LAlt | Keycode::RAlt
-    )
+/// Spørger macOS direkte om Option-modifier-bit er sat — kræver IKKE Accessibility.
+/// Bruger NSEvent.modifierFlags (AppKit class method, thread-safe).
+/// NSEventModifierFlagOption = 1 << 19 = 0x80000
+/// NSEventModifierFlagCommand = 1 << 20 = 0x100000 (ekskluderes så Cmd+Option ikke trigger)
+#[cfg(target_os = "macos")]
+fn check_option_held() -> bool {
+    use objc2::{class, msg_send};
+    unsafe {
+        let cls = class!(NSEvent);
+        let flags: usize = msg_send![cls, modifierFlags];
+        flags & (1 << 19) != 0 && flags & (1 << 20) == 0
+    }
 }
 
-/// Kun modifiers nede — ellers ignorerer vi PTT (fx Option+ bogstav).
-fn is_modifier_only_keycode(key: &Keycode) -> bool {
-    matches!(
-        key,
-        Keycode::LControl
-            | Keycode::RControl
-            | Keycode::LShift
-            | Keycode::RShift
-            | Keycode::LAlt
-            | Keycode::RAlt
-            | Keycode::LOption
-            | Keycode::ROption
-            | Keycode::Command
-            | Keycode::RCommand
-            | Keycode::LMeta
-            | Keycode::RMeta
-            | Keycode::CapsLock
-    )
-}
-
-fn ptt_chord_ok(keys: &[Keycode]) -> bool {
-    let option_down = keys.iter().any(is_option_keycode);
-    option_down && keys.iter().all(|k| is_modifier_only_keycode(k))
+#[cfg(not(target_os = "macos"))]
+fn check_option_held() -> bool {
+    false
 }
 
 /// Fuldskærm uden macOS "eksklusiv fuldskærm" (som giver sort canvas) — fylder primær skærm.
@@ -468,43 +652,28 @@ fn apply_overlay_to_primary<R: Runtime>(overlay: &WebviewWindow<R>) -> Result<()
 }
 
 fn start_command_hold_listener(app_handle: AppHandle) {
-    // device_query på macOS kræver Tilgængelighed. Vent først — ellers er get_keys() tom.
+    // NSEvent.modifierFlags kræver IKKE Accessibility — vi starter med det samme.
+    // Accessibility vises stadig i UI hvis det mangler (kræves til tekst-indsætning).
     thread::spawn(move || {
         #[cfg(target_os = "macos")]
         {
+            // Vis prompt én gang; blokerer ikke PTT-loopen.
             let _ = macos_accessibility_client::accessibility::application_is_trusted_with_prompt();
-            let mut last_missing_accessibility_event = Instant::now() - Duration::from_secs(10);
-            while !macos_accessibility_client::accessibility::application_is_trusted() {
-                if last_missing_accessibility_event.elapsed() >= Duration::from_secs(8) {
-                    let _ = app_handle.emit_to(
-                        EventTarget::webview_window("overlay"),
-                        "push-to-talk-permission-missing",
-                        (),
-                    );
-                    let _ = app_handle.emit_to(
-                        EventTarget::webview_window("main"),
-                        "push-to-talk-permission-missing",
-                        (),
-                    );
-                    last_missing_accessibility_event = Instant::now();
-                }
-                thread::sleep(Duration::from_millis(200));
-            }
-            thread::sleep(Duration::from_millis(400));
         }
 
-        let device_state = DeviceState::new();
         let mut is_talking = false;
         let mut pending_since: Option<Instant> = None;
 
         loop {
-            let keys = device_state.get_keys();
-            let chord_ok = ptt_chord_ok(&keys);
+            let option_held = check_option_held();
 
-            if chord_ok {
+            if option_held {
                 if !is_talking {
                     let started_at = pending_since.get_or_insert_with(Instant::now);
                     if started_at.elapsed() >= Duration::from_millis(80) {
+                        if let Some(main) = app_handle.get_webview_window("main") {
+                            let _ = main.hide();
+                        }
                         if let Some(overlay) = app_handle.get_webview_window("overlay") {
                             let _ = apply_overlay_to_primary(&overlay);
                             let _ = overlay.set_always_on_top(true);
@@ -519,11 +688,7 @@ fn start_command_hold_listener(app_handle: AppHandle) {
                         is_talking = true;
                     }
                 }
-            } else if !is_talking {
-                pending_since = None;
-            }
-
-            if !keys.iter().any(is_option_keycode) {
+            } else {
                 pending_since = None;
                 if is_talking {
                     let _ = app_handle.emit_to(
@@ -609,6 +774,13 @@ pub fn run() {
             capture_screen,
             copy_text,
             insert_text,
+            insert_text_from_overlay,
+            trigger_ptt_test,
+            play_ui_sound,
+            get_accessibility_status,
+            get_screen_recording_status,
+            request_screen_recording_permission,
+            create_calendar_event,
             request_accessibility_permission,
             set_overlay_interactive,
             show_settings_window,
@@ -616,7 +788,9 @@ pub fn run() {
             open_microphone_privacy,
             open_sound_input_settings,
             open_screentime_settings,
+            open_screen_recording_settings,
             open_accessibility_settings,
+            restart_app,
             request_macos_av_microphone,
             mic_native::native_mic_start,
             mic_native::native_mic_stop

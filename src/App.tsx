@@ -16,6 +16,8 @@ declare global {
 export default function App() {
   const [settings, setSettings] = useState<SettingsState>(loadSettings);
   const [showSettings, setShowSettings] = useState(!settings.apiKey);
+  const [accessibilityOk, setAccessibilityOk] = useState<boolean | null>(null);
+  const [screenOk, setScreenOk] = useState<boolean | null>(null);
 
   const {
     state,
@@ -44,6 +46,14 @@ export default function App() {
   useEffect(() => {
     if (!window.__TAURI_INTERNALS__) return;
     void invoke<boolean>("request_accessibility_permission");
+
+    const check = () => {
+      void invoke<boolean>("get_accessibility_status").then(setAccessibilityOk);
+      void invoke<boolean>("get_screen_recording_status").then(setScreenOk);
+    };
+    check();
+    const id = setInterval(check, 3000);
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
@@ -187,6 +197,82 @@ export default function App() {
             <h2>Indstillinger</h2>
             <p>Gemmes kun lokalt på denne computer.</p>
           </div>
+
+          {window.__TAURI_INTERNALS__ && accessibilityOk !== null ? (
+            <div className={`mic-guide ${accessibilityOk ? "mic-guide--ok" : "mic-guide--warn"}`}>
+              <h3 className="mic-guide-title">
+                {accessibilityOk ? "✓ Option-tast (PTT): Klar" : "✗ Option-tast virker ikke endnu"}
+              </h3>
+              {!accessibilityOk ? (
+                <>
+                  <p className="mic-guide-lead">
+                    Giv <strong>Hey Mikkel</strong> adgang under <strong>Systemindstillinger → Fortrolighed og sikkerhed → Tilgængelighed</strong>. Derefter starter Option-tasten automatisk inden for få sekunder — du behøver ikke genstarte.
+                  </p>
+                  <div className="mic-guide-actions">
+                    <button
+                      type="button"
+                      className="mic-guide-primary"
+                      onClick={() => void invoke("open_accessibility_settings")}
+                    >
+                      Åbn Tilgængelighed
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="mic-guide-actions">
+                  <button
+                    type="button"
+                    className="inline-button"
+                    onClick={() => void invoke("trigger_ptt_test")}
+                  >
+                    Test PTT (optager 3 sek)
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {window.__TAURI_INTERNALS__ && screenOk !== null ? (
+            <div className={`mic-guide ${screenOk ? "mic-guide--ok" : "mic-guide--warn"}`}>
+              <h3 className="mic-guide-title">
+                {screenOk ? "✓ Skærmoptagelse: Klar" : "✗ Skærmoptagelse mangler"}
+              </h3>
+              {!screenOk ? (
+                <>
+                  <p className="mic-guide-lead">
+                    Tryk "Giv adgang" herunder — Hey Mikkel beder macOS om lov direkte. Har du allerede sagt ja i dialogen, skal du bare trykke <strong>Genstart</strong>.
+                  </p>
+                  <div className="mic-guide-actions">
+                    <button
+                      type="button"
+                      className="mic-guide-primary"
+                      onClick={() => void invoke("request_screen_recording_permission")}
+                    >
+                      Giv adgang til skærmoptagelse
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-button"
+                      onClick={() => void invoke("open_screen_recording_settings")}
+                    >
+                      Åbn Skærmoptagelse manuelt
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-button"
+                      onClick={() => void invoke("restart_app")}
+                    >
+                      Genstart Hey Mikkel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p className="mic-guide-lead" style={{ margin: 0 }}>
+                  Sig <strong>"tjek min skærm"</strong> mens du holder Option — Hey Mikkel læser og besvarer hvad der er på skærmen.
+                </p>
+              )}
+            </div>
+          ) : null}
 
           {window.__TAURI_INTERNALS__ ? (
             <div className="mic-guide">

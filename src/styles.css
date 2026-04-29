@@ -339,6 +339,16 @@ h1 {
   background: rgba(0, 0, 0, 0.22);
 }
 
+.mic-guide--ok {
+  border-color: rgba(80, 200, 100, 0.35);
+  background: rgba(40, 100, 50, 0.18);
+}
+
+.mic-guide--warn {
+  border-color: rgba(220, 100, 60, 0.45);
+  background: rgba(120, 40, 20, 0.18);
+}
+
 .mic-guide-title {
   margin: 0 0 8px;
   font-size: 16px;

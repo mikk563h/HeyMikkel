@@ -7,6 +7,12 @@ import { requestNativeMicrophonePermission } from "./macosMicPermission";
 import { getSettings } from "./voice/settings";
 import type { AppState } from "./voice/types";
 
+function playTone(type: "start" | "stop") {
+  if (window.__TAURI_INTERNALS__) {
+    void invoke("play_ui_sound", { sound: type });
+  }
+}
+
 function Waveform() {
   return (
     <div className="hm-wave" aria-hidden>
@@ -97,6 +103,7 @@ export function OverlayApp() {
   const [liveLine, setLiveLine] = useState("");
 
   const voice = useVoiceSession({ listenPushToTalk: true });
+  const prevStateRef = useRef<AppState>("idle");
 
   const {
     state,
@@ -106,14 +113,39 @@ export function OverlayApp() {
     error,
     resetToIdle,
     copyResult,
-    insertResult,
     refine,
     generateResponse,
     lastInstruction,
     lastScreenshot,
   } = voice;
 
+  // Skjuler overlay FØRST så det forrige programs markørposition bevares, derefter indsæt.
+  const handleInsert = useCallback(
+    async (text?: string) => {
+      const payload = (text ?? result).trim();
+      if (!payload) return;
+      try {
+        await invoke("set_overlay_interactive", { interactive: false });
+        await getCurrentWindow().hide();
+      } catch { /* ignore */ }
+      resetToIdle();
+      await new Promise((r) => setTimeout(r, 180));
+      try {
+        await invoke("insert_text_from_overlay", { text: payload });
+      } catch { /* ignore */ }
+    },
+    [result, resetToIdle],
+  );
+
   useLiveTranscript(state === "listening", setLiveLine);
+
+  // Lyd når mikrofon starter / stopper
+  useEffect(() => {
+    const prev = prevStateRef.current;
+    if (state === "listening" && prev !== "listening") playTone("start");
+    else if (prev === "listening" && state !== "listening") playTone("stop");
+    prevStateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     if (!getSettings().apiKey.trim()) {
@@ -193,36 +225,35 @@ export function OverlayApp() {
       {hasResultPanel && result && (
         <div className="hm-result">
           <header className="hm-result-hd">
-            <span className="hm-mark">HEY MIKKEL</span>
+            <span className="hm-mark">◆ Hey Mikkel</span>
             <div className="hm-result-tools">
               <button type="button" className="hm-icon" title="Kopiér" onClick={() => copyResult()}>
-                <Copy size={18} />
+                <Copy size={15} />
               </button>
               <button type="button" className="hm-icon" title="Luk" onClick={() => void dismissResult()}>
-                <X size={18} />
+                <X size={15} />
               </button>
             </div>
           </header>
           <p className="hm-result-body">{result}</p>
-          <div className="hm-result-chips">
-            <button type="button" onClick={() => void insertResult()}>
+          <div className="hm-result-footer">
+            <div className="hm-result-refine">
+              <button type="button" onClick={() => void refine("Gør svaret kortere. Return only the final text.")}>
+                <Wand2 size={12} /> Kortere
+              </button>
+              <button type="button" onClick={() => void refine("Gør svaret mere personligt. Return only the final text.")}>
+                Personlig
+              </button>
+              <button type="button" onClick={() => void refine("Gør svaret mere professionelt. Return only the final text.")}>
+                <Briefcase size={12} /> Professionel
+              </button>
+              <button type="button" onClick={() => void generateResponse(lastInstruction, lastScreenshot)}>
+                <RefreshCw size={12} /> Igen
+              </button>
+            </div>
+            <button type="button" className="hm-insert-btn" onClick={() => void handleInsert()}>
               <Check size={15} />
-              Indsæt
-            </button>
-            <button type="button" onClick={() => void refine("Gør svaret kortere. Return only the final text.")}>
-              <Wand2 size={15} />
-              Kortere
-            </button>
-            <button type="button" onClick={() => void refine("Gør svaret mere personligt. Return only the final text.")}>
-              Mere personlig
-            </button>
-            <button type="button" onClick={() => void refine("Gør svaret mere professionelt. Return only the final text.")}>
-              <Briefcase size={15} />
-              Mere professionel
-            </button>
-            <button type="button" onClick={() => void generateResponse(lastInstruction, lastScreenshot)}>
-              <RefreshCw size={15} />
-              Prøv igen
+              Indsæt ved markør
             </button>
           </div>
         </div>
@@ -230,7 +261,7 @@ export function OverlayApp() {
 
       {state === "error" && error && (
         <div className="hm-toast">
-          <p>{error}</p>
+          <p>{error.replace(/^SCREEN_PERMISSION:\s*/, "")}</p>
           <div className="hm-toast-actions">
             {/Tilgaengelighed|Accessibility/i.test(error) && window.__TAURI_INTERNALS__ ? (
               <button
@@ -241,9 +272,27 @@ export function OverlayApp() {
                 Aabn Tilgaengelighed
               </button>
             ) : null}
-            {/mikrofon|microphone|Lyd|Input|lyd|input|optag|Core|enhed|Hey|afvist|not allowed|privatliv|Fortrolig/i.test(
-              error,
-            ) && window.__TAURI_INTERNALS__ ? (
+            {error.startsWith("SCREEN_PERMISSION:") && window.__TAURI_INTERNALS__ ? (
+              <>
+                <button
+                  type="button"
+                  className="hm-toast-btn"
+                  onClick={() => void invoke("open_screen_recording_settings")}
+                >
+                  Åbn Skærmoptagelse
+                </button>
+                <button
+                  type="button"
+                  className="hm-toast-btn"
+                  onClick={() => void invoke("restart_app")}
+                >
+                  Genstart Hey Mikkel
+                </button>
+              </>
+            ) : null}
+            {!error.startsWith("SCREEN_PERMISSION:") &&
+              /mikrofon|microphone|Lyd|Input|lyd|input|Core|enhed|afvist|not allowed|privatliv|Fortrolig/i.test(error) &&
+              window.__TAURI_INTERNALS__ ? (
               <>
                 <button
                   type="button"

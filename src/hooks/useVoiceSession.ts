@@ -8,7 +8,7 @@ import {
   base64ToWavBlob,
   describeMicError,
 } from "../voice/audioUtils";
-import { buildPrompt, shouldReadScreen } from "../voice/prompts";
+import { buildPrompt, shouldReadScreen, shouldCreateCalendarEvent, CALENDAR_EXTRACT_PROMPT } from "../voice/prompts";
 import type { AppState } from "../voice/types";
 import { getSettings } from "../voice/settings";
 
@@ -107,6 +107,36 @@ export function useVoiceSession(options: Options) {
 
       setTranscript(spokenText);
 
+      // Kalender-oprettelse — before screen check
+      if (shouldCreateCalendarEvent(spokenText) && !shouldReadScreen(spokenText, settings)) {
+        setState("thinking");
+        setMessage("Opretter begivenhed...");
+        const today = new Date().toISOString().split("T")[0];
+        const raw = await invoke<string>("ask_ai", {
+          apiKey: settings.apiKey,
+          systemPrompt: CALENDAR_EXTRACT_PROMPT,
+          userPrompt: `Today's date: ${today}\n\nUser said: ${spokenText}`,
+          screenshotBase64: null,
+        });
+        try {
+          const ev = JSON.parse(raw) as {
+            title: string; date: string; start_time: string;
+            end_time: string; location: string; notes: string;
+          };
+          const confirmation = await invoke<string>("create_calendar_event", {
+            title: ev.title, date: ev.date, startTime: ev.start_time,
+            endTime: ev.end_time, location: ev.location ?? "", notes: ev.notes ?? "",
+          });
+          setResult(confirmation);
+          setState("result");
+          setMessage("Begivenhed oprettet");
+        } catch {
+          setResult(`Oprettede begivenhed ud fra: "${spokenText}". Tjek Kalender-appen.`);
+          setState("result");
+        }
+        return;
+      }
+
       let screenshotBase64: string | null = null;
       if (shouldReadScreen(spokenText, settings)) {
         if (
@@ -157,6 +187,7 @@ export function useVoiceSession(options: Options) {
 
   const startRecording = useCallback(async () => {
     if (isRecording.current) return;
+    isRecording.current = true;
 
     try {
       setError("");
@@ -167,9 +198,9 @@ export function useVoiceSession(options: Options) {
 
       if (window.__TAURI_INTERNALS__) {
         await requestNativeMicrophonePermission();
+        if (!isRecording.current) return; // PTT sluppet mens permission ventede
         await invoke("native_mic_start");
         useNativeMicRef.current = true;
-        isRecording.current = true;
         return;
       }
 
@@ -198,6 +229,7 @@ export function useVoiceSession(options: Options) {
       isRecording.current = true;
       recorder.start();
     } catch (caught) {
+      isRecording.current = false;
       const text = describeMicError(caught);
       setError(text);
       setMessage("Kunne ikke starte mikrofonen");
